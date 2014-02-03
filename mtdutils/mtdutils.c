@@ -242,8 +242,10 @@ mtd_partition_info(const MtdPartition *partition,
     if (ret < 0) return -1;
 
     if (total_size != NULL) *total_size = mtd_info.size;
-    if (erase_size != NULL) *erase_size = mtd_info.erasesize;
-    if (write_size != NULL) *write_size = mtd_info.writesize;
+    // Misc partition ioctl fix, courtesy of
+    // http://git.linux-rockchip.org/radxa/radxa_rock_android/tree/master/bootable/recovery
+    if (erase_size != NULL) *erase_size = (mtd_info.erasesize>32*512)?mtd_info.erasesize:32*512;
+    if (write_size != NULL) *write_size = (mtd_info.erasesize>32*512)?mtd_info.erasesize:32*512;
     return 0;
 }
 
@@ -280,43 +282,16 @@ void mtd_read_skip_to(const MtdReadContext* ctx, size_t offset) {
 
 static int read_block(const MtdPartition *partition, int fd, char *data)
 {
-    struct mtd_ecc_stats before, after;
-    if (ioctl(fd, ECCGETSTATS, &before)) {
-        fprintf(stderr, "mtd: ECCGETSTATS error (%s)\n", strerror(errno));
-        return -1;
-    }
-
-    loff_t pos = lseek64(fd, 0, SEEK_CUR);
-
+	// Misc partition ioctl fix, courtesy of
+    // http://git.linux-rockchip.org/radxa/radxa_rock_android/tree/master/bootable/recovery
     ssize_t size = partition->erase_size;
-    int mgbb;
-
-    while (pos + size <= (int) partition->size) {
-        if (lseek64(fd, pos, SEEK_SET) != pos || read(fd, data, size) != size) {
-            fprintf(stderr, "mtd: read error at 0x%08llx (%s)\n",
-                    pos, strerror(errno));
-        } else if (ioctl(fd, ECCGETSTATS, &after)) {
-            fprintf(stderr, "mtd: ECCGETSTATS error (%s)\n", strerror(errno));
-            return -1;
-        } else if (after.failed != before.failed) {
-            fprintf(stderr, "mtd: ECC errors (%d soft, %d hard) at 0x%08llx\n",
-                    after.corrected - before.corrected,
-                    after.failed - before.failed, pos);
-            // copy the comparison baseline for the next read.
-            memcpy(&before, &after, sizeof(struct mtd_ecc_stats));
-        } else if ((mgbb = ioctl(fd, MEMGETBADBLOCK, &pos))) {
-            fprintf(stderr,
-                    "mtd: MEMGETBADBLOCK returned %d at 0x%08llx (errno=%d)\n",
-                    mgbb, pos, errno);
-        } else {
-            return 0;  // Success!
-        }
-
-        pos += partition->erase_size;
+    off_t pos = lseek(fd, 0, SEEK_CUR);
+    if (read(fd, data, size) != size) {
+    	fprintf(stderr, "mtd: read error (%s)\n", strerror(errno));
+    	errno = ENOSPC;
+    	return -1;
     }
-
-    errno = ENOSPC;
-    return -1;
+    return 0;
 }
 
 ssize_t mtd_read_data(MtdReadContext *ctx, char *data, size_t len)
@@ -407,70 +382,14 @@ static int write_block(MtdWriteContext *ctx, const char *data)
 
     ssize_t size = partition->erase_size;
 
-    char *verify = malloc(size);
-    if (verify == NULL)
-        return 1;
-
-    while (pos + size <= (int) partition->size) {
-        loff_t bpos = pos;
-        int ret = ioctl(fd, MEMGETBADBLOCK, &bpos);
-        if (ret != 0 && !(ret == -1 && errno == EOPNOTSUPP)) {
-            add_bad_block_offset(ctx, pos);
-            fprintf(stderr,
-                    "mtd: not writing bad block at 0x%08lx (ret %d errno %d)\n",
-                    pos, ret, errno);
-            pos += partition->erase_size;
-            continue;  // Don't try to erase known factory-bad blocks.
-        }
-
-        struct erase_info_user erase_info;
-        erase_info.start = pos;
-        erase_info.length = size;
-        int retry;
-        for (retry = 0; retry < 2; ++retry) {
-            if (ioctl(fd, MEMERASE, &erase_info) < 0) {
-                fprintf(stderr, "mtd: erase failure at 0x%08lx (%s)\n",
-                        pos, strerror(errno));
-                continue;
-            }
-            if (lseek(fd, pos, SEEK_SET) != pos ||
-                write(fd, data, size) != size) {
-                fprintf(stderr, "mtd: write error at 0x%08lx (%s)\n",
-                        pos, strerror(errno));
-            }
-
-            if (lseek(fd, pos, SEEK_SET) != pos ||
-                read(fd, verify, size) != size) {
-                fprintf(stderr, "mtd: re-read error at 0x%08lx (%s)\n",
-                        pos, strerror(errno));
-                continue;
-            }
-            if (memcmp(data, verify, size) != 0) {
-                fprintf(stderr, "mtd: verification error at 0x%08lx (%s)\n",
-                        pos, strerror(errno));
-                continue;
-            }
-
-            if (retry > 0) {
-                fprintf(stderr, "mtd: wrote block after %d retries\n", retry);
-            }
-            fprintf(stderr, "mtd: successfully wrote block at %llx\n", pos);
-            free(verify);
-            return 0;  // Success!
-        }
-
-        // Try to erase it once more as we give up on this block
-        add_bad_block_offset(ctx, pos);
-        fprintf(stderr, "mtd: skipping write block at 0x%08lx\n", pos);
-        ioctl(fd, MEMERASE, &erase_info);
-        pos += partition->erase_size;
+    // Misc partition ioctl fix, courtesy of
+    // http://git.linux-rockchip.org/radxa/radxa_rock_android/tree/master/bootable/recovery
+    if (write(fd, data, size) != size) {
+    	fprintf(stderr,"mtd: write error (%s)\n", strerror(errno));
+    	errno = ENOSPC;
+    	return -1;
     }
-
-    free(verify);
-
-    // Ran out of space on the device
-    errno = ENOSPC;
-    return -1;
+    return 0;
 }
 
 ssize_t mtd_write_data(MtdWriteContext *ctx, const char *data, size_t len)
@@ -523,21 +442,12 @@ off_t mtd_erase_blocks(MtdWriteContext *ctx, int blocks)
     }
 
     // Erase the specified number of blocks
+    // Misc partition ioctl fix, courtesy of
+    // http://git.linux-rockchip.org/radxa/radxa_rock_android/tree/master/bootable/recovery
+    memset(ctx->buffer, 0xFF, ctx->partition->erase_size);
     while (blocks-- > 0) {
-        loff_t bpos = pos;
-        if (ioctl(ctx->fd, MEMGETBADBLOCK, &bpos) > 0) {
-            fprintf(stderr, "mtd: not erasing bad block at 0x%08lx\n", pos);
-            pos += ctx->partition->erase_size;
-            continue;  // Don't try to erase known factory-bad blocks.
-        }
-
-        struct erase_info_user erase_info;
-        erase_info.start = pos;
-        erase_info.length = ctx->partition->erase_size;
-        if (ioctl(ctx->fd, MEMERASE, &erase_info) < 0) {
-            fprintf(stderr, "mtd: erase failure at 0x%08lx\n", pos);
-        }
-        pos += ctx->partition->erase_size;
+    	if (write_block(ctx, ctx->buffer))
+    		return -1;
     }
 
     return pos;
