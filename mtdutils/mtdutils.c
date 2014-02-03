@@ -376,12 +376,12 @@ static int write_block(MtdWriteContext *ctx, const char *data)
 {
     const MtdPartition *partition = ctx->partition;
     int fd = ctx->fd;
-    
+
     off_t pos = lseek(fd, 0, SEEK_CUR);
     if (pos == (off_t) -1) return 1;
-    
+
     ssize_t size = partition->erase_size;
-    
+
     // Misc partition ioctl fix, courtesy of 
     // http://git.linux-rockchip.org/radxa/radxa_rock_android/tree/master/bootable/recovery
     if (write(fd, data, size) != size) {
