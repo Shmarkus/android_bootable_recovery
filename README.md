@@ -4,6 +4,6 @@ Thanks to:
 CyanogenMod;
 Koush;
 and
-http://git.linux-rockchip.org/radxa/radxa_rock_android/tree/master/bootable/recovery.
+http://git.linux-rockchip.org/radxa/radxa_rock_android/tree/master/bootable/recovery
 
-And helpful people at freaktab.com
+And helpful people at freaktab.com.
